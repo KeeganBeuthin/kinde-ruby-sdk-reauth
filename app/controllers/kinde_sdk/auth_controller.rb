@@ -22,7 +22,8 @@ module KindeSdk
       nonce = SecureRandom.urlsafe_base64(16)
       
       # Get authorization URL and PKCE code verifier from SDK
-      auth_data = KindeSdk.auth_url(nonce: nonce)
+      # Add supports_reauth parameter to enable reauth functionality
+      auth_data = KindeSdk.auth_url(nonce: nonce, supports_reauth: "true")
       
       # Store PKCE code verifier and nonce in session for validation
       session[:code_verifier] = auth_data[:code_verifier] if auth_data[:code_verifier].present?
@@ -41,6 +42,54 @@ module KindeSdk
     # Validates the response, exchanges code for tokens, and sets up the session
     # @return [void] Redirects to root path on success
     def callback
+      # Check for reauth error handling first
+      error_param = params[:error]
+      
+      if error_param.present?
+        if error_param.downcase == "login_link_expired"
+          reauth_state = params[:reauth_state]
+          
+          if reauth_state.present?
+            begin
+              # Decode the base64 encoded reauth state
+              decoded_auth_state = Base64.decode64(reauth_state)
+              reauth_params = JSON.parse(decoded_auth_state)
+              
+              if reauth_params.present?
+                # Build the login route with original parameters
+                callback_url = KindeSdk.config.callback_url
+                base_url = callback_url.split('/callback').first
+                login_url = "#{base_url}/auth"
+                
+                # Convert reauth_params hash to URL query string
+                query_string = URI.encode_www_form(reauth_params)
+                redirect_url = "#{login_url}?#{query_string}"
+                
+                redirect_to redirect_url, allow_other_host: true
+                return
+              end
+            rescue JSON::ParserError => e
+              Rails.logger.error("Error parsing reauth state: #{e.message}")
+              redirect_with_error("Error parsing reauth state: #{e.message}")
+              return
+            rescue StandardError => e
+              Rails.logger.error("Unknown error parsing reauth state: #{e.message}")
+              redirect_with_error("Unknown error parsing reauth state")
+              return
+            end
+          end
+          
+          # If we get here, reauth_state was missing or invalid
+          redirect_with_error("Login link expired")
+          return
+        end
+        
+        # Handle other errors
+        redirect_with_error("Authentication error: #{error_param}")
+        return
+      end
+
+      # Continue with normal callback processing
       tokens = fetch_and_validate_tokens
       return if performed?
 
@@ -169,6 +218,11 @@ module KindeSdk
     # Checks state existence, matches returned state with stored state, and validates expiration
     # @return [void]
     def validate_state
+      # Skip validation for reauth scenarios
+      if params[:reauth_state].present?
+        return
+      end
+      
       # Check if nonce and state exist in session
       unless session[:auth_state]
         redirect_with_error("Invalid authentication state")
