@@ -33,7 +33,7 @@ module KindeSdk
     end
 
     class << self
-      extend KindeSdk::Logging
+      include KindeSdk::Logging
 
       def create_store(tokens = nil)
         TokenStore.new(tokens)
